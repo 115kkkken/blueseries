@@ -182,7 +182,7 @@
 
         <!-- START ADDED: inline deck name input (placed at bottom of lineup panel) -->
         <div style="margin-top:12px;">
-          <label style="display:block;margin-bottom:6px;color:#cfe8ff;font-weight:700;">副牌組名稱</label>
+          <label style="display:block;margin-bottom:6px;color:#cfe8ff;font-weight:700;">牌組名稱</label>
           <input id="inlineDeckName" type="text" placeholder="在此輸入牌組名稱" style="width:100%;box-sizing:border-box;padding:8px;border-radius:6px;border:1px solid rgba(255,255,255,0.06);background:rgba(255,255,255,0.02);color:#fff;">
         </div>
         <!-- END ADDED: inline deck name input -->
@@ -190,7 +190,7 @@
       </div>
 
       <div class="footer-actions" style="margin-top:14px;">
-        <button class="btn-primary" id="confirmBtn">確認軍表</button>
+        <button class="btn-primary" id="confirmBtn">匯出軍表</button>
         <button class="btn-ghost" id="backToCampBtn">返回編輯大本營</button>
         <button class="btn-ghost" id="clearLineupBtn">重置軍表構築</button>
         <!-- START ADDED HTML: share button -->
@@ -310,7 +310,6 @@
     { id:'c_13', name:'聰慧戰略家 漢尼拔', cost:0, maxCopies:1, img: imgForId('C_13') },
     { id:'c_14', name:'烈火龍王', cost:0, maxCopies:1, img: imgForId('C_14') },
   ];
-
   // STATE
   let chosenLeaderId = null;
   const campSelections = new Set();
@@ -614,6 +613,280 @@
     updatePlusButtonsState(); renderSelectedUnits();
   }
 
+  function attemptAddCard(card, countSpan, plusButton){
+    const current = lineupCounts.get(card.id) || 0;
+    if(current >= card.maxCopies){ plusButton.classList.add('flash'); setTimeout(()=> plusButton.classList.remove('flash'),360); return; }
+    if(usedBudget + card.cost > MAX_BUDGET){ remainingBudgetEl.classList.add('flash'); setTimeout(()=> remainingBudgetEl.classList.remove('flash'),360); plusButton.classList.add('flash'); setTimeout(()=> plusButton.classList.remove('flash'),360); return; }
+    const uid = 'u_' + Date.now() + '_' + Math.floor(Math.random()*1000);
+    units.push({ uid, cardId: card.id, cardName: card.name, upgrades: new Set(), upgradesCost: 0, isLeader:false });
+    lineupCounts.set(card.id, current + 1);
+    usedBudget += card.cost;
+    countSpan.textContent = lineupCounts.get(card.id);
+    updateBudgetDisplay(); updatePlusButtonsState(); renderSelectedUnits();
+  }
+
+  function attemptRemoveCard(card, countSpan){
+    const current = lineupCounts.get(card.id) || 0;
+    if(current <= 0) return;
+    for(let i = units.length - 1; i >= 0; i--){
+      if(units[i].cardId === card.id && !units[i].isLeader){
+        const unit = units.splice(i,1)[0];
+        usedBudget -= (card.cost + unit.upgradesCost);
+        if(usedBudget < 0) usedBudget = 0;
+        break;
+      }
+    }
+    lineupCounts.set(card.id, current - 1);
+    countSpan.textContent = lineupCounts.get(card.id);
+    updateBudgetDisplay(); updatePlusButtonsState(); renderSelectedUnits();
+  }
+
+  function renderSelectedUnits(){
+    selectedUnitsEl.innerHTML = '';
+    if(units.length === 0){ selectedUnitsEl.innerHTML = '<div class="hint">你尚未選擇先發單位。按 + 新增，新增後可為單位加裝升級。</div>'; updateSelectedCount(); return; }
+    const leaderUnit = units.find(u => u.isLeader);
+    const otherUnits = units.filter(u => !u.isLeader);
+    const ordered = leaderUnit ? [leaderUnit, ...otherUnits] : otherUnits;
+    ordered.forEach(unit=>{
+      const cardInfo = campCards.find(c=>c.id===unit.cardId) || { name: unit.cardName, img: '' };
+      const el = document.createElement('div'); el.className = 'unit-card'; el.dataset.uid = unit.uid;
+      const cached = imageCache[cardInfo.id];
+      const src = (cached && cached.src) ? cached.src : cardInfo.img;
+      el.innerHTML = `
+        <img src="${src}" alt="${cardInfo.name}">
+        <div style="display:flex;gap:8px;align-items:center;">
+          <div style="flex:1;font-size:14px;font-weight:700">${cardInfo.name}</div>
+        </div>
+        <div class="unit-title">升級</div>
+        <div class="upgrades"></div>
+        <div class="unit-actions"></div>
+      `;
+      // Only non-leader unit images zoomable
+      if(!unit.isLeader) makeImgZoomable(el.querySelector('img'));
+
+      const upgradesContainer = el.querySelector('.upgrades');
+      UPGRADES.forEach(up=>{
+        const btn = document.createElement('button');
+        btn.className = 'upgrade-btn' + (unit.upgrades.has(up.key) ? ' active' : '');
+        btn.textContent = up.label;
+        btn.dataset.uid = unit.uid;
+        btn.dataset.upkey = up.key;
+        btn.addEventListener('click', ()=> toggleUnitUpgrade(unit.uid, up.key));
+        upgradesContainer.appendChild(btn);
+      });
+      const actionsContainer = el.querySelector('.unit-actions');
+      if(!unit.isLeader){
+        const removeBtn = document.createElement('button'); removeBtn.className = 'btn-small'; removeBtn.textContent = '移除單位';
+        removeBtn.dataset.uid = unit.uid; removeBtn.addEventListener('click', (e)=> removeUnitByUid(e.currentTarget.dataset.uid));
+        actionsContainer.appendChild(removeBtn);
+      } else {
+        const info = document.createElement('div'); info.style.opacity = '0.85'; info.style.fontSize = '13px';
+        info.textContent = '領主（自動加入，可升級）'; actionsContainer.appendChild(info);
+      }
+      selectedUnitsEl.appendChild(el);
+    });
+    updateSelectedCount();
+  }
+
+  function toggleUnitUpgrade(uid, upkey){
+    const unit = units.find(u=>u.uid===uid); if(!unit) return;
+    const up = UPGRADES.find(x=>x.key===upkey); if(!up) return;
+    if(unit.upgrades.has(upkey)){ unit.upgrades.delete(upkey); unit.upgradesCost -= up.cost; usedBudget -= up.cost; if(usedBudget < 0) usedBudget = 0; }
+    else { if(usedBudget + up.cost > MAX_BUDGET){ remainingBudgetEl.classList.add('flash'); setTimeout(()=> remainingBudgetEl.classList.remove('flash'),360); return; } unit.upgrades.add(upkey); unit.upgradesCost += up.cost; usedBudget += up.cost; }
+    updateBudgetDisplay(); renderSelectedUnits(); updatePlusButtonsState();
+  }
+
+  function removeUnitByUid(uid){
+    const idx = units.findIndex(u=>u.uid===uid); if(idx === -1) return;
+    const unit = units[idx]; if(unit.isLeader){ alert('領主為固定單位，無法移除。'); return; }
+    units.splice(idx,1);
+    const cardInfo = campCards.find(c=>c.id===unit.cardId);
+    if(cardInfo){ usedBudget -= (cardInfo.cost + unit.upgradesCost); if(usedBudget < 0) usedBudget = 0; const cur = lineupCounts.get(unit.cardId) || 0; lineupCounts.set(unit.cardId, Math.max(0, cur - 1)); }
+    else { usedBudget -= unit.upgradesCost; if(usedBudget < 0) usedBudget = 0; }
+    updateBudgetDisplay(); renderLineupGallery();
+  }
+
+  function updatePlusButtonsState(){
+    lineupGallery.querySelectorAll('.sub-card').forEach(cardEl=>{
+      const id = cardEl.dataset.cardId; const info = campCards.find(c=>c.id===id);
+      if(!info || info.isLeader) return;
+      const plusBtn = cardEl.querySelector('.count-controls button:nth-child(3)');
+      const current = lineupCounts.get(id) || 0;
+      if((usedBudget + info.cost > MAX_BUDGET) || (current >= info.maxCopies)) plusBtn.disabled = true; else plusBtn.disabled = false;
+    });
+  }
+
+  function updateBudgetDisplay(){ const remaining = Math.max(0, MAX_BUDGET - usedBudget); remainingBudgetEl.textContent = remaining; remainingBudgetEl.className = 'value'; if(remaining === 0) remainingBudgetEl.classList.add('over'); }
+  function updateSelectedCount(){ selectedCountEl.textContent = units.length; }
+
+  // ---------------------------
+  // Export: draw images with containment and fixed image boxes (no cropping, no overlap)
+  // ---------------------------
+  async function exportDeckAsImage(deckName, tactics){
+    const scaleFactor = 2;
+    const baseW = 1200;
+    const padding = 24;
+    const cardsPerRow = 6;
+
+    // fixed image box sizes (same for every small card)
+    const cardImageW =  (Math.floor((baseW - padding*2 - (cardsPerRow-1)*12)/cardsPerRow)); // width of card box
+    const cardImageH = 90; // height reserved for the image area (keeps uniform size)
+    const labelH = 20; // label area under image
+    const cardBoxH = cardImageH + labelH + 6; // total row height per card (consistent)
+
+    const campRows = Math.ceil(campCards.length / cardsPerRow);
+    const unitsPerRow = 4;
+    const unitImageW = Math.floor((baseW - padding*2 - (unitsPerRow-1)*12)/unitsPerRow);
+    const unitImageH = 110; // fixed unit image H
+    const unitBoxH = unitImageH + labelH + 14; // total unit box height
+
+    const unitRows = Math.max(1, Math.ceil(units.length / unitsPerRow));
+    const headerH = 120;
+    const hBase = padding*2 + headerH + campRows*cardBoxH + 24 + unitRows*(unitBoxH + 20);
+    const canvasW = baseW * scaleFactor;
+    const canvasH = Math.max(600, Math.floor(hBase * scaleFactor));
+
+    const canvas = document.createElement('canvas');
+    canvas.width = canvasW; canvas.height = canvasH;
+    const ctx = canvas.getContext('2d');
+    ctx.scale(scaleFactor, scaleFactor);
+
+    // background & header
+    ctx.fillStyle = '#071018'; ctx.fillRect(0,0,baseW,canvasH/scaleFactor);
+    ctx.fillStyle = '#fff'; ctx.font = `700 28px sans-serif`; ctx.fillText(deckName, padding, padding + 28);
+    ctx.font = `14px sans-serif`; ctx.fillStyle = '#cfe8ff';
+    const tacticsLines = wrapText(ctx, tactics, baseW - padding*2);
+    tacticsLines.forEach((ln,i)=> ctx.fillText(ln, padding, padding + 28 + (i+1)*18));
+    const rem = Math.max(0, MAX_BUDGET - usedBudget);
+    ctx.fillStyle = '#9ae6b4'; ctx.font = `600 14px sans-serif`;
+    ctx.fillText(`剩餘費用: ${rem}`, baseW - padding - 220, padding + 24);
+    ctx.fillText(`已選卡牌數量: ${units.length}`, baseW - padding - 220, padding + 44);
+
+    // camp title
+    let y = padding + headerH;
+    ctx.fillStyle = '#cfe8ff'; ctx.font = `600 16px sans-serif`; ctx.fillText('大本營牌庫', padding, y - 10);
+
+    // draw camp grid: each card uses fixed image box (cardImageW x cardImageH) and we CENTER and CONTAIN the original image into that box.
+    let cx = padding; let cy = y + 12; let col = 0;
+    campCards.forEach((c,i)=>{
+      const img = imageCache[c.id] || null;
+      // card background
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(cx, cy, cardImageW, cardBoxH - 6);
+      // draw contained image centered inside (no cropping)
+      if(img){
+        // clip to the image box area to ensure no overflow (defensive)
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(cx, cy, cardImageW, cardImageH);
+        ctx.clip();
+        drawImageContain(ctx, img, cx, cy, cardImageW, cardImageH);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = 'rgba(255,255,255,0.01)'; ctx.fillRect(cx, cy, cardImageW, cardImageH);
+        ctx.fillStyle = '#ccc'; ctx.font = `12px sans-serif`; ctx.fillText('圖示無法載入', cx + 8, cy + (cardImageH/2));
+      }
+      // name under image in reserved label area
+      ctx.fillStyle = '#fff'; ctx.font = `600 12px sans-serif`; ctx.fillText(c.name, cx + 6, cy + cardImageH + 14);
+      col++; cx += cardImageW + 12; if(col >= cardsPerRow){ col = 0; cx = padding; cy += cardBoxH; }
+    });
+
+    // units section
+    let unitsY = cy + 130;
+    ctx.fillStyle = '#cfe8ff'; ctx.font = `600 16px sans-serif`; ctx.fillText('先發陣容與升級', padding, unitsY - 10);
+
+    let ux = padding; let uy = unitsY + 12;
+    units.forEach((u,i)=>{
+      const card = campCards.find(c=>c.id===u.cardId) || { name:u.cardName, img: '' };
+      const img = imageCache[card.id] || null;
+      ctx.fillStyle = 'rgba(255,255,255,0.02)'; ctx.fillRect(ux, uy, unitImageW, unitBoxH - 10);
+      if(img){
+        ctx.save();
+        ctx.beginPath();
+        ctx.rect(ux, uy, unitImageW, unitImageH);
+        ctx.clip();
+        drawImageContain(ctx, img, ux, uy, unitImageW, unitImageH);
+        ctx.restore();
+      } else {
+        ctx.fillStyle='rgba(255,255,255,0.01)'; ctx.fillRect(ux,uy,unitImageW,unitImageH);
+        ctx.fillStyle='#ccc'; ctx.font='12px sans-serif'; ctx.fillText('圖示無法載入', ux + 8, uy + (unitImageH/2));
+      }
+      ctx.fillStyle = '#fff'; ctx.font = `600 13px sans-serif`; ctx.fillText(card.name, ux + 8, uy + unitImageH + 16);
+      ctx.fillStyle = '#9ae6b4'; ctx.font = `500 12px sans-serif`;
+      const ups = Array.from(u.upgrades).map(k=> (UPGRADES.find(x=>x.key===k) || {}).label ).filter(Boolean);
+      const upText = ups.length ? ups.join(' / ') : '無';
+      wrapDrawText(ctx, upText, ux + 8, uy + unitImageH + 36, unitImageW - 12, 14);
+      ux += unitImageW + 12;
+      if((i+1) % unitsPerRow === 0){ ux = padding; uy += unitBoxH + 20; }
+    });
+
+    return new Promise((resolve)=>{
+      canvas.toBlob(function(blob){
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        const safe = deckName.replace(/[^\w\-_\u4e00-\u9fff]/g,'_') || 'deck';
+        a.download = `${safe}.png`;
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(()=> { URL.revokeObjectURL(a.href); document.body.removeChild(a); resolve(); }, 1500);
+      }, 'image/png');
+    });
+  }
+
+  // drawImageContain: draw image fully inside box, preserve original aspect ratio; image is centered, not cropped
+  function drawImageContain(ctx, img, x, y, w, h){
+    if(!img) return;
+    const iw = img.width || 1, ih = img.height || 1;
+    const scale = Math.min(w/iw, h/ih);
+    const nw = iw * scale;
+    const nh = ih * scale;
+    const dx = x + (w - nw) / 2;
+    const dy = y + (h - nh) / 2;
+    try { ctx.drawImage(img, dx, dy, nw, nh); } catch(e){ ctx.fillStyle='rgba(255,255,255,0.02)'; ctx.fillRect(x,y,w,h); }
+  }
+
+  // helpers
+  function wrapText(ctx, text, maxWidth){
+    if(!text) return [];
+    const words = text.split(/\s+/);
+    const lines = []; let line = '';
+    for(let i=0;i<words.length;i++){
+      const test = line ? (line + ' ' + words[i]) : words[i];
+      const w = ctx.measureText(test).width;
+      if(w > maxWidth && line){ lines.push(line); line = words[i]; } else { line = test; }
+    }
+    if(line) lines.push(line);
+    return lines;
+  }
+  function wrapDrawText(ctx, text, x, y, maxW, lineH){
+    const words = text.split(' '); let line = ''; let curY = y;
+    for(let i=0;i<words.length;i++){
+      const test = line ? (line + ' ' + words[i]) : words[i];
+      const w = ctx.measureText(test).width;
+      if(w > maxW && line){ ctx.fillText(line, x, curY); line = words[i]; curY += lineH; } else { line = test; }
+    }
+    if(line) ctx.fillText(line, x, curY);
+  }
+
+  // ---------------------------
+  // Notification modal for card count rule
+  // ---------------------------
+  function showCountNotification(message){
+    const backdrop = document.createElement('div'); backdrop.className = 'modal-backdrop';
+    const modal = document.createElement('div'); modal.className = 'modal';
+    modal.innerHTML = `
+      <h3>卡牌數量不符規定</h3>
+      <div style="color:#cfe8ff;margin-top:8px">${message}</div>
+      <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;">
+        <button id="okCountNotify" class="btn-primary">好</button>
+      </div>
+    `;
+    backdrop.appendChild(modal);
+    document.body.appendChild(backdrop);
+    modal.querySelector('#okCountNotify').addEventListener('click', ()=> {
+      document.body.removeChild(backdrop);
+    });
+  }
+
   // ---------------------------
   // START ADDED JS: State serialization / sharing (localStorage-based short URLs, fallback to encoded state)
   // ADDED START
@@ -650,6 +923,7 @@
   }
 
   function buildShareState(){
+    // minimal necessary state to rebuild: leader, campSelections, selectedOtherA, selectedCtypes, units (cardId + upgrades)
     const deckName = (document.getElementById('inlineDeckName') && document.getElementById('inlineDeckName').value) || '';
     const state = {
       chosenLeaderId,
@@ -666,26 +940,34 @@
     return state;
   }
 
+  // Try to save state to localStorage under short key; return short url if success.
+  // If localStorage fails, return fallback long url containing encoded state in hash.
   function generateShareUrl(){
     const state = buildShareState();
+    // try localStorage
     try{
       if (typeof localStorage !== 'undefined' && localStorage) {
+        // generate id and store
         const maxAttempts = 6;
         for (let i=0;i<maxAttempts;i++){
           const id = generateShortId(8);
           const key = 'deck_' + id;
           if (!localStorage.getItem(key)){
             localStorage.setItem(key, JSON.stringify(state));
+            // short URL using id
             return `${location.origin}${location.pathname}#id=${id}`;
           }
         }
+        // if collision or full, fall back to full store under timestamp
         const fallbackKey = 'deck_auto_' + Date.now();
         localStorage.setItem(fallbackKey, JSON.stringify(state));
         return `${location.origin}${location.pathname}#key=${encodeURIComponent(fallbackKey)}`;
       }
     }catch(e){
+      // localStorage not available or quota exceeded -> fallback to encoded state in URL
       console.warn('localStorage not available for sharing, falling back to full-state hash.', e);
     }
+    // fallback: embed encoded state in hash (long)
     const token = encodeStateFallback(state);
     if (!token) return null;
     return `${location.origin}${location.pathname}#state=${token}`;
@@ -724,8 +1006,10 @@
     });
   }
 
+  // apply loaded state object into UI
   function applyStateObject(state){
     if(!state) return;
+    // apply leader + selections
     if(state.chosenLeaderId && leaders.some(l=>l.id===state.chosenLeaderId)){
       chosenLeaderId = state.chosenLeaderId;
     } else {
@@ -743,19 +1027,24 @@
     if(Array.isArray(state.selectedCtypes)){
       state.selectedCtypes.forEach(id => selectedCtypes.add(id));
     }
+    // ensure leader included
     if(chosenLeaderId) campSelections.add(chosenLeaderId);
 
+    // render UI for camp
     renderLeaders();
     renderACards();
     renderBCards();
     renderCCards();
     updateLimitHints();
+    // build camp cards then restore units
     buildCampCardsFromSelections();
 
+    // restore inline deck name (if present)
     if(state.deckName && document.getElementById('inlineDeckName')){
       document.getElementById('inlineDeckName').value = state.deckName;
     }
 
+    // now reconstruct units from state.units
     units.length = 0;
     usedBudget = 0;
     if(Array.isArray(state.units)){
@@ -773,6 +1062,7 @@
           lineupCounts.set(cardId, (lineupCounts.get(cardId)||0) + 1);
           usedBudget += (cardInfo.cost + upgradesCost);
         } else if(isLeader && cardInfo){
+          // leader has cost 0 in camp model
           usedBudget += upgradesCost;
         } else {
           usedBudget += upgradesCost;
@@ -782,12 +1072,15 @@
     updateBudgetDisplay();
     renderLineupGallery();
 
+    // switch to lineup view so opening URL directly shows constructed content
     tabLineup.classList.add('active'); tabCamp.classList.remove('active'); campStage.style.display = 'none'; lineupStage.style.display = '';
   }
 
+  // try to load from URL hash: supports #id=SHORTID (localStorage), #key=..., or #state=ENCODED (fallback)
   function tryLoadStateFromHash(){
     const h = location.hash || '';
     if(!h) return false;
+    // check id=
     let m = h.match(/[#&]id=([^&]+)/);
     if(m){
       const id = decodeURIComponent(m[1]);
@@ -807,6 +1100,7 @@
         return false;
       }
     }
+    // check key=
     m = h.match(/[#&]key=([^&]+)/);
     if(m){
       const k = decodeURIComponent(m[1]);
@@ -825,6 +1119,7 @@
         return false;
       }
     }
+    // check state= (fallback long encoded)
     m = h.match(/[#&]state=([^&]+)/);
     if(m){
       const token = m[1];
@@ -838,9 +1133,7 @@
   // ADDED END
   // ---------------------------
 
-  init();
-
-  // finish wiring events (share button, init adjustments)
+  // Init and event wiring (same as previous)
   async function init(){
     document.getElementById('enterLineupBtn').disabled = true;
     document.getElementById('confirmBtn').disabled = true;
@@ -865,46 +1158,48 @@
     /* START ADDED (init): try load state from URL hash after preload */
     tryLoadStateFromHash();
     /* END ADDED (init) */
-
-    // share button handler
-    document.getElementById('shareBtn').addEventListener('click', ()=> {
-      if(campStage.style.display !== 'none'){
-        if(!chosenLeaderId){ alert('請先選擇一位領主。'); return; }
-        buildCampCardsFromSelections();
-      }
-      openShareModal();
-    });
-
-    // enter lineup handler
-    document.getElementById('enterLineupBtn').addEventListener('click', ()=> {
-      if(!chosenLeaderId){ alert('請先選擇一位領主。'); return; }
-      buildCampCardsFromSelections();
-      renderLineupGallery();
-      tabLineup.click();
-    });
-
-    document.getElementById('resetCampBtn').addEventListener('click', ()=> { if(!confirm('重置大本營會清除已選擇內容，確定嗎？')) return; resetCamp(); });
-    document.getElementById('backToCampBtn').addEventListener('click', ()=> { tabCamp.click(); });
-    document.getElementById('clearLineupBtn').addEventListener('click', ()=> { if(!confirm('重置先發將清除所有選擇數量與升級，確定嗎？')) return; const leaderUnit = units.find(u => u.isLeader); units.length = 0; if(leaderUnit) units.push(leaderUnit); lineupCounts.clear(); campCards.forEach(c => lineupCounts.set(c.id, c.isLeader ? 1 : 0)); usedBudget = 0; updateBudgetDisplay(); renderLineupGallery(); });
-
-    document.getElementById('confirmBtn').addEventListener('click', ()=> {
-      const totalSelectedUnits = units.length; // includes leader if present
-      if(totalSelectedUnits < 7 || totalSelectedUnits > 10){
-        showCountNotification(`先發單位數量必須為 7 ~ 10 張（包含領主）。目前已選擇 ${totalSelectedUnits} 張。請調整後再確認。`);
-        return;
-      }
-      openConfirmModal();
-    });
-
-    // prefill export modal's deckName from inline input when opening modal
-    const originalOpenConfirmModal = openConfirmModal;
-    window.openConfirmModal = function(){
-      originalOpenConfirmModal();
-      // modal prefill handled inside original openConfirmModal implementation in this file
-    };
   }
 
-  // override openConfirmModal to prefill deck name from inlineDeckName (kept at bottom to ensure function exists)
+  document.getElementById('tabCamp').addEventListener('click', ()=> { tabCamp.classList.add('active'); tabLineup.classList.remove('active'); campStage.style.display = ''; lineupStage.style.display = 'none'; });
+  document.getElementById('tabLineup').addEventListener('click', ()=> { tabLineup.classList.add('active'); tabCamp.classList.remove('active'); campStage.style.display = 'none'; lineupStage.style.display = ''; });
+
+  // ENTER LINEUP: build camp -> lineup (no final-count check here)
+  document.getElementById('enterLineupBtn').addEventListener('click', ()=> {
+    if(!chosenLeaderId){ alert('請先選擇一位領主。'); return; }
+    buildCampCardsFromSelections();
+    renderLineupGallery();
+    tabLineup.click();
+  });
+
+  document.getElementById('resetCampBtn').addEventListener('click', ()=> { if(!confirm('重置大本營會清除已選擇內容，確定嗎？')) return; resetCamp(); });
+  document.getElementById('backToCampBtn').addEventListener('click', ()=> { tabCamp.click(); });
+  document.getElementById('clearLineupBtn').addEventListener('click', ()=> { if(!confirm('重置先發將清除所有選擇數量與升級，確定嗎？')) return; const leaderUnit = units.find(u => u.isLeader); units.length = 0; if(leaderUnit) units.push(leaderUnit); lineupCounts.clear(); campCards.forEach(c => lineupCounts.set(c.id, c.isLeader ? 1 : 0)); usedBudget = 0; updateBudgetDisplay(); renderLineupGallery(); });
+
+  // START ADDED: share button handler
+  // ADDED START
+  // SHARE 按鈕
+  document.getElementById('shareBtn').addEventListener('click', ()=> {
+    // ensure campCards/units state is current
+    // if user is still in camp stage, build camp first so share captures camp cards
+    if(campStage.style.display !== 'none'){
+      if(!chosenLeaderId){ alert('請先選擇一位領主。'); return; }
+      buildCampCardsFromSelections();
+    }
+    openShareModal();
+  });
+  // ADDED END
+  // END ADDED: share button handler
+
+  // CONFIRM: check selected units count (including leader) is 7~10 before opening confirm modal
+  document.getElementById('confirmBtn').addEventListener('click', ()=> {
+    const totalSelectedUnits = units.length; // includes leader if present
+    if(totalSelectedUnits < 7 || totalSelectedUnits > 10){
+      showCountNotification(`先發單位數量必須為 7 ~ 10 張（包含領主）。目前已選擇 ${totalSelectedUnits} 張。請調整後再確認。`);
+      return;
+    }
+    openConfirmModal();
+  });
+
   function openConfirmModal(){
     const backdrop = document.createElement('div'); backdrop.className = 'modal-backdrop';
     const modal = document.createElement('div'); modal.className = 'modal';
@@ -922,12 +1217,15 @@
     `;
     backdrop.appendChild(modal); document.body.appendChild(backdrop);
 
+    // ADDED: prefill modal deckName from inline input if available
     const inlineName = (document.getElementById('inlineDeckName') && document.getElementById('inlineDeckName').value) || '';
     modal.querySelector('#deckName').value = inlineName;
 
     modal.querySelector('#cancelExport').addEventListener('click', ()=> document.body.removeChild(backdrop));
     modal.querySelector('#doExport').addEventListener('click', async ()=> { const name = modal.querySelector('#deckName').value || '未命名牌組'; const tactics = modal.querySelector('#deckTactics').value || ''; await exportDeckAsImage(name, tactics); document.body.removeChild(backdrop); });
   }
+
+  init();
 </script>
 </body>
 </html>
